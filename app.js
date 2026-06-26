@@ -42,7 +42,7 @@ const el = {
     
     // Scrubber & Playback
     timelineThumbnails: document.getElementById('timeline-thumbnails'),
-    timelineScrubber: document.getElementById('timeline-scrubber'),
+    timelineTrack: document.querySelector('.timeline-track-container'),
     timelinePlayhead: document.getElementById('timeline-playhead'),
     currentTime: document.getElementById('current-time'),
     totalTime: document.getElementById('total-time'),
@@ -55,6 +55,8 @@ const el = {
     
     // Info Panel
     btnBackHeader: document.getElementById('btn-back-header'),
+    btnInfoHeader: document.getElementById('btn-info-header'),
+    infoPopover: document.getElementById('info-popover'),
     infoName: document.getElementById('info-name'),
     infoType: document.getElementById('info-type'),
     infoResolution: document.getElementById('info-resolution'),
@@ -106,16 +108,28 @@ function init() {
     
     // Close Media (Back Button)
     el.btnBackHeader.addEventListener('click', closeMedia);
+
+    // Media Info Popover (top-right "i" button)
+    el.btnInfoHeader.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleInfoPopover();
+    });
+    // Close popover when clicking/tapping outside of it
+    document.addEventListener('click', (e) => {
+        if (el.infoPopover.style.display === 'none') return;
+        if (el.infoPopover.contains(e.target) || el.btnInfoHeader.contains(e.target)) return;
+        closeInfoPopover();
+    });
     
     // Play / Pause
     el.btnPlayPause.addEventListener('click', togglePlayPause);
     
-    // Next / Prev Frame Buttons
-    el.btnPrevFrame.addEventListener('click', () => stepFrame(-1));
-    el.btnNextFrame.addEventListener('click', () => stepFrame(1));
+    // Next / Prev Frame Buttons (tap to step once, press-and-hold to step repeatedly)
+    setupFramePressHold(el.btnPrevFrame, -1);
+    setupFramePressHold(el.btnNextFrame, 1);
     
-    // Scrubber Change
-    el.timelineScrubber.addEventListener('input', handleScrub);
+    // Scrubber: drag/tap anywhere on the timeline track
+    setupScrubbing();
     
     // Format Selection Tabs
     el.formatTabs.forEach(tab => {
@@ -142,8 +156,31 @@ function init() {
         state.exportQuality = val / 100;
     });
     
-    // Preview Canvas click (Tap video to open high-res frame in new tab)
-    el.previewCanvas.addEventListener('click', () => extractCurrentFrame(true));
+    // Preview Canvas click & touch (Tap video to open high-res frame in new tab)
+    let touchStartX = 0;
+    let touchStartY = 0;
+    el.previewCanvas.addEventListener('touchstart', (e) => {
+        const touch = e.changedTouches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+    }, { passive: true });
+    
+    el.previewCanvas.addEventListener('touchend', (e) => {
+        const touch = e.changedTouches[0];
+        const diffX = Math.abs(touch.clientX - touchStartX);
+        const diffY = Math.abs(touch.clientY - touchStartY);
+        // Standard tap threshold
+        if (diffX < 10 && diffY < 10) {
+            e.preventDefault();
+            extractCurrentFrame(true);
+        }
+    });
+    
+    el.previewCanvas.addEventListener('click', (e) => {
+        // Only trigger if not already handled by touch
+        if (e.defaultPrevented) return;
+        extractCurrentFrame(true);
+    });
     
     // Extract Button (Save)
     el.btnExtract.addEventListener('click', () => extractCurrentFrame(false));
@@ -224,6 +261,7 @@ async function loadVideo(fileOrUrl) {
         el.dropzone.style.display = 'none';
         el.workspace.style.display = 'grid';
         el.btnBackHeader.style.display = 'flex';
+        el.btnInfoHeader.style.display = 'flex';
         
         // Render first frame
         el.sourceVideo.currentTime = 0;
@@ -407,6 +445,7 @@ async function loadGIF(file) {
         el.dropzone.style.display = 'none';
         el.workspace.style.display = 'grid';
         el.btnBackHeader.style.display = 'flex';
+        el.btnInfoHeader.style.display = 'flex';
         
         // Render first frame
         drawGIFFrame(0);
@@ -553,6 +592,38 @@ function playGIFLoop() {
 
 // --- 4. Navigation & Scrubbing ---
 
+// Tap = single step, press-and-hold = continuous stepping until release
+function setupFramePressHold(button, direction) {
+    const HOLD_DELAY = 400;   // ms before continuous stepping kicks in
+    const REPEAT_GAP = 80;    // ms between repeated steps while held
+    let active = false;
+    let holdTimer = null;
+
+    const repeatStep = async () => {
+        if (!active) return;
+        await stepFrame(direction);
+        if (active) holdTimer = setTimeout(repeatStep, REPEAT_GAP);
+    };
+
+    const start = (e) => {
+        e.preventDefault();
+        if (active) return;
+        active = true;
+        stepFrame(direction); // immediate single step on press
+        holdTimer = setTimeout(repeatStep, HOLD_DELAY);
+    };
+
+    const stop = () => {
+        active = false;
+        clearTimeout(holdTimer);
+    };
+
+    button.addEventListener('pointerdown', start);
+    button.addEventListener('pointerup', stop);
+    button.addEventListener('pointerleave', stop);
+    button.addEventListener('pointercancel', stop);
+}
+
 // Step precisely +1 / -1 frame
 async function stepFrame(direction) {
     pause();
@@ -586,46 +657,104 @@ async function stepFrame(direction) {
     }
 }
 
-// Scrubber handle dragging (timeline sliding)
-async function handleScrub(e) {
-    pause();
-    const val = parseInt(e.target.value);
-    const pct = val / 1000;
-    
-    if (state.mediaType === 'video') {
-        const seekTime = pct * state.duration;
-        el.sourceVideo.currentTime = seekTime;
+// Pointer-based scrubbing: the entire track is the touch target and the
+// playhead follows the finger/cursor exactly.
+function setupScrubbing() {
+    const track = el.timelineTrack;
+    let scrubbing = false;
+
+    const pctFromClientX = (clientX) => {
+        const rect = track.getBoundingClientRect();
+        const pct = (clientX - rect.left) / rect.width;
+        return Math.max(0, Math.min(1, pct));
+    };
+
+    track.addEventListener('pointerdown', (e) => {
+        scrubbing = true;
+        try { track.setPointerCapture(e.pointerId); } catch (err) {}
+        pause();
+        seekToPct(pctFromClientX(e.clientX));
+    });
+
+    track.addEventListener('pointermove', (e) => {
+        if (!scrubbing) return;
+        seekToPct(pctFromClientX(e.clientX));
+    });
+
+    const stop = (e) => {
+        scrubbing = false;
+        try { track.releasePointerCapture(e.pointerId); } catch (err) {}
+    };
+    track.addEventListener('pointerup', stop);
+    track.addEventListener('pointercancel', stop);
+}
+
+// Coalesced video seeking: while one seek is in flight, only the latest
+// requested position is kept so dragging stays responsive instead of
+// queuing up every intermediate seek.
+let pendingSeekTime = null;
+let seekInFlight = false;
+
+async function processVideoSeek() {
+    if (seekInFlight) return;
+    seekInFlight = true;
+    while (pendingSeekTime !== null) {
+        const target = pendingSeekTime;
+        pendingSeekTime = null;
+        el.sourceVideo.currentTime = target;
         await waitForSeek();
         drawVideoFrameToCanvas();
-        
+    }
+    seekInFlight = false;
+}
+
+// Move playback to a position given as 0..1 along the timeline
+function seekToPct(pct) {
+    if (state.mediaType === 'video') {
+        const seekTime = pct * state.duration;
+        // Update UI immediately for instant feedback
         state.currentFrameIndex = Math.min(state.totalFrames - 1, Math.floor(seekTime * state.fps));
         el.currentTime.textContent = formatTime(seekTime);
-        updateTimelinePlayhead(pct, false); // don't move range value again since user is dragging it
+        updateTimelinePlayhead(pct);
         updateFrameCounter();
-        
+        // Actual frame draw is coalesced to the latest position
+        pendingSeekTime = seekTime;
+        processVideoSeek();
+
     } else if (state.mediaType === 'gif') {
         const targetFrameIdx = Math.min(state.totalFrames - 1, Math.floor(pct * state.totalFrames));
         state.currentFrameIndex = targetFrameIdx;
         drawGIFFrame(targetFrameIdx);
-        
+
         const curTime = state.gifAccumulatedTimes[targetFrameIdx];
         el.currentTime.textContent = formatTime(curTime);
-        updateTimelinePlayhead(pct, false);
+        updateTimelinePlayhead(pct);
         updateFrameCounter();
     }
 }
 
 // --- Auxiliary UI Sync Helpers ---
-function updateTimelinePlayhead(pct, updateSlider = true) {
-    const playheadPct = pct * 100;
-    el.timelinePlayhead.style.left = `${playheadPct}%`;
-    if (updateSlider) {
-        el.timelineScrubber.value = Math.round(pct * 1000);
-    }
+function updateTimelinePlayhead(pct) {
+    el.timelinePlayhead.style.left = `${pct * 100}%`;
 }
 
 function updateFrameCounter() {
     el.frameCounter.textContent = `프레임: ${state.currentFrameIndex + 1} / ${state.totalFrames}`;
+}
+
+// --- Media Info Popover ---
+function toggleInfoPopover() {
+    if (el.infoPopover.style.display === 'none') {
+        el.infoPopover.style.display = 'block';
+        el.btnInfoHeader.classList.add('active');
+    } else {
+        closeInfoPopover();
+    }
+}
+
+function closeInfoPopover() {
+    el.infoPopover.style.display = 'none';
+    el.btnInfoHeader.classList.remove('active');
 }
 
 // Close current workspace and return to upload dashboard
@@ -650,6 +779,8 @@ function closeMedia() {
     el.workspace.style.display = 'none';
     el.dropzone.style.display = 'block';
     el.btnBackHeader.style.display = 'none';
+    el.btnInfoHeader.style.display = 'none';
+    closeInfoPopover();
     
     // Reset state
     state.mediaType = null;
@@ -661,8 +792,99 @@ function closeMedia() {
 
 // --- 5. High-Resolution Frame Extraction & Exporting ---
 function extractCurrentFrame(forceNewTab = false) {
-    showLoader('고화질 프레임 캡처 중...');
-    
+    let newTab = null;
+    if (forceNewTab) {
+        // Open the new tab synchronously inside the gesture handler to bypass popup blockers
+        newTab = window.open('', '_blank');
+        if (newTab) {
+            newTab.document.write(`
+                <!DOCTYPE html>
+                <html lang="ko">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>CapShot 프레임 미리보기</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <style>
+                        body {
+                            margin: 0;
+                            background: #080a10;
+                            display: flex;
+                            flex-direction: column;
+                            align-items: center;
+                            justify-content: center;
+                            min-height: 100vh;
+                            color: #f3f4f6;
+                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+                            overflow: hidden;
+                            user-select: none;
+                            -webkit-user-select: none;
+                        }
+                        .loader-container {
+                            display: flex;
+                            flex-direction: column;
+                            align-items: center;
+                            gap: 16px;
+                            transition: opacity 0.3s ease;
+                        }
+                        .spinner {
+                            width: 40px;
+                            height: 40px;
+                            border: 3px solid rgba(255, 255, 255, 0.1);
+                            border-radius: 50%;
+                            border-top-color: #3b82f6;
+                            animation: spin 1s ease-in-out infinite;
+                        }
+                        @keyframes spin {
+                            to { transform: rotate(360deg); }
+                        }
+                        .image-container {
+                            position: absolute;
+                            top: 0; left: 0; right: 0; bottom: 0;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            opacity: 0;
+                            transition: opacity 0.4s ease;
+                        }
+                        img {
+                            max-width: 100%;
+                            max-height: 100%;
+                            object-fit: contain;
+                            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                        }
+                        .hint-text {
+                            position: absolute;
+                            bottom: 24px;
+                            background: rgba(0,0,0,0.7);
+                            padding: 8px 16px;
+                            border-radius: 20px;
+                            font-size: 13px;
+                            backdrop-filter: blur(8px);
+                            -webkit-backdrop-filter: blur(8px);
+                            color: #e5e7eb;
+                            pointer-events: none;
+                            opacity: 0;
+                            transition: opacity 0.4s ease;
+                            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div id="loader" class="loader-container">
+                        <div class="spinner"></div>
+                        <div>고해상도 프레임 생성 중...</div>
+                    </div>
+                    <div id="img-wrapper" class="image-container">
+                        <img id="preview-img" src="" alt="CapShot Frame">
+                        <div id="hint" class="hint-text">이미지를 길게 누르면 저장하거나 공유할 수 있습니다.</div>
+                    </div>
+                </body>
+                </html>
+            `);
+            newTab.document.close();
+        }
+    }
+
     // Create temporary full-resolution export canvas
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = state.videoWidth;
@@ -691,38 +913,90 @@ function extractCurrentFrame(forceNewTab = false) {
         ext = 'webp';
     }
     
-    // Export and trigger download/preview
+    // "저장" 버튼 / Enter: save the frame.
+    // Generated synchronously so navigator.share() stays within the user gesture.
+    if (!forceNewTab) {
+        const baseName = state.fileName.substring(0, state.fileName.lastIndexOf('.')) || 'CapShot';
+        const filename = `${baseName}_frame_${state.currentFrameIndex + 1}.${ext}`;
+        saveFrame(exportCanvas, mimeType, filename);
+        return;
+    }
+
+    // Canvas tap: render the high-res frame into the opened preview tab
     exportCanvas.toBlob((blob) => {
-        hideLoader();
         if (!blob) {
             alert('이미지 추출에 실패했습니다.');
+            if (newTab) newTab.close();
             return;
         }
-        
-        if (!forceNewTab) {
-            // Always download/save directly when clicking "저장" button
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            
-            // Clean suffix with frame index or timestamp
-            const baseName = state.fileName.substring(0, state.fileName.lastIndexOf('.')) || 'CapShot';
-            const suffix = `_frame_${state.currentFrameIndex + 1}`;
-            a.download = `${baseName}${suffix}.${ext}`;
-            
-            a.href = url;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-            // Trigger beautiful Toast Notification
-            showToast(`프레임 ${state.currentFrameIndex + 1}이 고화질 ${state.exportFormat.toUpperCase()} 파일로 저장되었습니다!`);
-        } else {
-            // Open in new tab/window when tapping the top video preview canvas
-            const url = URL.createObjectURL(blob);
-            window.open(url, '_blank');
+
+        const url = URL.createObjectURL(blob);
+
+        if (newTab && !newTab.closed) {
+            const img = newTab.document.getElementById('preview-img');
+            const loader = newTab.document.getElementById('loader');
+            const imgWrapper = newTab.document.getElementById('img-wrapper');
+            const hint = newTab.document.getElementById('hint');
+
+            if (img) {
+                img.onload = () => {
+                    if (loader) loader.style.opacity = '0';
+                    setTimeout(() => {
+                        if (loader) loader.style.display = 'none';
+                        if (imgWrapper) imgWrapper.style.opacity = '1';
+                        if (hint) hint.style.opacity = '1';
+                    }, 300);
+                };
+                img.src = url;
+            }
         }
     }, mimeType, state.exportFormat === 'png' ? undefined : state.exportQuality);
+}
+
+// Convert a data URL into a Blob synchronously (keeps the user gesture alive
+// for navigator.share, unlike the async canvas.toBlob).
+function dataURLToBlob(dataURL) {
+    const [header, base64] = dataURL.split(',');
+    const mime = header.match(/:(.*?);/)[1];
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: mime });
+}
+
+// Save a frame: native share sheet on mobile (lets the user save to the photo
+// album), direct download as fallback on desktop / unsupported browsers.
+async function saveFrame(canvas, mimeType, filename) {
+    const quality = state.exportFormat === 'png' ? undefined : state.exportQuality;
+    const dataUrl = canvas.toDataURL(mimeType, quality);
+    const blob = dataURLToBlob(dataUrl);
+    const file = new File([blob], filename, { type: mimeType });
+
+    // Mobile: open the OS share sheet so the user can "사진에 저장 / 이미지 저장"
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+            await navigator.share({ files: [file], title: 'CapShot' });
+            return;
+        } catch (err) {
+            // User cancelled — do nothing
+            if (err && err.name === 'AbortError') return;
+            // Any other failure falls through to download
+        }
+    }
+
+    // Desktop / unsupported: trigger a download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.download = filename;
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    showToast(`프레임 ${state.currentFrameIndex + 1}이 고화질 ${state.exportFormat.toUpperCase()} 파일로 저장되었습니다!`);
 }
 
 // Show animated success toast notification
@@ -780,5 +1054,8 @@ function formatTime(secs) {
 }
 
 // Fire up
-document.addEventListener('DOMContentLoaded', init);
-init(); // fallback
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
