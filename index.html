@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CapShot (캡샷) - 웹 비디오 / GIF 프레임 추출기</title>
+    <meta name="description" content="설치 없이 웹에서 즉시 동영상과 GIF의 프레임을 정밀하게 탐색하고 고화질 이미지로 추출하세요. 100% 로컬에서 작동하여 개인정보를 완벽히 보호합니다.">
+    
+    <!-- Open Graph / SEO -->
+    <meta property="og:title" content="CapShot (캡샷) - 웹 비디오 / GIF 프레임 추출기">
+    <meta property="og:description" content="동영상, GIF 프레임을 1프레임 단위로 미세 조절하고 고해상도로 추출하세요.">
+    <meta property="og:type" content="website">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="app.css?v=2.9">
+</head>
+<body>
+    <div id="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <button id="btn-back-header" class="btn-back-header" style="display: none;" title="뒤로가기">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 22px; height: 22px; display: block;">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+            </button>
+            <div class="header-center-area">
+                <div class="header-logo">
+                    <svg viewBox="0 0 24 24" class="logo-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="14.31" y1="8" x2="20.05" y2="17.94"></line>
+                        <line x1="9.69" y1="8" x2="21.17" y2="8"></line>
+                        <line x1="7.38" y1="12" x2="13.12" y2="2.06"></line>
+                        <line x1="9.69" y1="16" x2="3.95" y2="6.06"></line>
+                        <line x1="14.31" y1="16" x2="2.83" y2="16"></line>
+                        <line x1="16.62" y1="12" x2="10.88" y2="21.94"></line>
+                    </svg>
+                    <span class="logo-text">CapShot <span class="logo-badge">Web</span></span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="app-main">
+            <!-- Dropzone: Shown when no media is loaded -->
+            <div id="dropzone" class="media-dropzone">
+                <div class="dropzone-content">
+                    <div class="glow-ring"></div>
+                    <svg viewBox="0 0 24 24" class="upload-icon" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <h3>미디어 파일 선택</h3>
+                    <p class="dropzone-hint">동영상(.mp4, .mov) 또는 .gif 파일을 이곳에 드래그하여 놓거나 파일을 선택하세요.</p>
+                    
+                    <label for="file-input" class="btn btn-primary select-btn">
+                        파일 찾기
+                    </label>
+                    <input type="file" id="file-input" accept="video/*, image/gif" style="display: none;">
+                    
+
+                    
+                    <span class="privacy-note">
+                        <svg viewBox="0 0 24 24" class="privacy-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                        모든 미디어 처리는 기기 내부에서 100% 로컬로 안전하게 진행됩니다.
+                    </span>
+                </div>
+            </div>
+
+            <!-- Workspace: Shown when media is loaded -->
+            <div id="workspace" class="workspace-layout" style="display: none;">
+                <!-- Left Panel: Preview & Timeline -->
+                <div class="preview-panel">
+                    <!-- Canvas Container -->
+                    <div class="canvas-container">
+                        <canvas id="preview-canvas"></canvas>
+                        <div id="loading-overlay" class="loading-overlay" style="display: none;">
+                            <div class="spinner"></div>
+                            <span id="loading-message">프레임 추출 중...</span>
+                        </div>
+                    </div>
+
+                    <!-- Custom Timeline Controls -->
+                    <div class="timeline-container">
+                        <!-- Thumbnails track -->
+                        <div class="timeline-track-container">
+                            <div id="timeline-thumbnails" class="timeline-thumbnails"></div>
+                            <input type="range" id="timeline-scrubber" min="0" max="1000" value="0">
+                            <div id="timeline-playhead" class="timeline-playhead"></div>
+                        </div>
+
+                        <!-- Stepper & Playback controls -->
+                        <div class="playback-controls">
+                            <div class="time-display">
+                                <span id="current-time">00:00.00</span>
+                                <span class="time-separator">/</span>
+                                <span id="total-time">00:00.00</span>
+                            </div>
+
+                            <div class="control-buttons">
+                                <button id="btn-prev-frame" class="btn btn-icon" title="이전 프레임 (왼쪽 화살표)">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polygon points="19 20 9 12 19 4 19 20"></polygon>
+                                        <line x1="5" y1="19" x2="5" y2="5"></line>
+                                    </svg>
+                                </button>
+                                
+                                <button id="btn-play-pause" class="btn btn-icon btn-play" title="재생/일시정지 (스페이스바)">
+                                    <svg id="play-icon" viewBox="0 0 24 24" fill="currentColor">
+                                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                                    </svg>
+                                    <svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display: none;">
+                                        <rect x="6" y="4" width="4" height="16"></rect>
+                                        <rect x="14" y="4" width="4" height="16"></rect>
+                                    </svg>
+                                </button>
+
+                                <button id="btn-next-frame" class="btn btn-icon" title="다음 프레임 (오른쪽 화살표)">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polygon points="5 4 15 12 5 20 5 4"></polygon>
+                                        <line x1="19" y1="5" x2="19" y2="19"></line>
+                                    </svg>
+                                </button>
+                            </div>
+
+                            <div class="frame-display">
+                                <span id="frame-counter">프레임: 0 / 0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Panel: Export Options -->
+                <div class="control-panel">
+                    <div class="panel-section">
+                        <div class="media-info-header">
+                            <div class="media-title-container" style="max-width: 100%; overflow: hidden; text-align: left;">
+                                <h2 class="section-title">미디어 정보</h2>
+                                <p id="info-name" style="font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">-</p>
+                            </div>
+                        </div>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <span class="info-label">유형</span>
+                                <span id="info-type" class="info-value">-</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">해상도</span>
+                                <span id="info-resolution" class="info-value">-</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">총 프레임</span>
+                                <span id="info-frames" class="info-value">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel-section">
+                        <h2 class="section-title">내보내기 설정</h2>
+                        <div class="export-options">
+                            <div class="option-group">
+                                <label class="option-label">저장 포맷</label>
+                                <div class="format-selector">
+                                    <button class="format-tab active" data-format="png">PNG</button>
+                                    <button class="format-tab" data-format="jpeg">JPEG</button>
+                                    <button class="format-tab" data-format="webp">WebP</button>
+                                </div>
+                            </div>
+
+                            <div id="quality-setting" class="option-group" style="display: none;">
+                                <div class="slider-header">
+                                    <label class="option-label">품질 (Quality)</label>
+                                    <span id="quality-value">90%</span>
+                                </div>
+                                <input type="range" id="export-quality" min="10" max="100" value="90">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel-section action-section">
+                        <button id="btn-extract" class="btn btn-primary btn-large btn-glow btn-extract-sticky">
+                            <svg viewBox="0 0 24 24" class="btn-icon-svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                            </svg>
+                            저장
+                        </button>
+                        <p class="keyboard-hint">단축키: <span>Space</span> 재생/정지, <span>←</span> 이전 프레임, <span>→</span> 다음 프레임, <span>Enter</span> 추출</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Footer -->
+        <footer class="app-footer">
+            <div class="footer-left">비디오 & GIF 고화질 프레임 추출기</div>
+            <div class="footer-right">
+                <a href="https://github.com/pikachu987/Shutter" target="_blank" rel="noopener">GitHub</a>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Hidden Video Tag for playback -->
+    <video id="source-video" style="display: none;" playsinline></video>
+
+    <!-- Success Toast Notification -->
+    <div id="toast" class="toast">
+        <svg viewBox="0 0 24 24" class="toast-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        <span id="toast-message">프레임 추출 완료!</span>
+    </div>
+
+    <!-- Script Import (ES Module) -->
+    <script type="module" src="app.js?v=2.9"></script>
+</body>
+</html>
