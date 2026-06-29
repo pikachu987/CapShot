@@ -1,5 +1,8 @@
 import { parseGIF, decompressFrames } from 'https://esm.sh/gifuct-js@2.1.2';
 
+// iOS Safari ignores user-scalable=no, so block pinch-zoom gestures manually.
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+
 // --- State Management ---
 const state = {
     mediaType: null,      // 'video' | 'gif'
@@ -715,6 +718,7 @@ function seekToPct(pct) {
 // --- Auxiliary UI Sync Helpers ---
 function updateTimelinePlayhead(pct) {
     el.timelinePlayhead.style.left = `${pct * 100}%`;
+    el.timelineTrack.style.setProperty('--playhead-pct', `${pct * 100}%`);
     drawDetailDial(pct);
 }
 

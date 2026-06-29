@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>CapShot (캡샷) - 웹 비디오 / GIF 프레임 추출기</title>
     <meta name="description" content="설치 없이 웹에서 즉시 동영상과 GIF의 프레임을 정밀하게 탐색하고 고화질 이미지로 추출하세요. 100% 로컬에서 작동하여 개인정보를 완벽히 보호합니다.">
     
@@ -17,7 +17,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     
     <!-- Custom Style -->
-    <link rel="stylesheet" href="app.css?v=4.7">
+    <link rel="stylesheet" href="app.css?v=5.0">
 </head>
 <body>
     <div id="app-container">
@@ -142,6 +142,9 @@
                         <!-- Thumbnails track -->
                         <div class="timeline-track-container">
                             <div id="timeline-thumbnails" class="timeline-thumbnails"></div>
+                            <div class="timeline-playhead-clip">
+                                <div class="timeline-playhead-line"></div>
+                            </div>
                             <div id="timeline-playhead" class="timeline-playhead"></div>
                         </div>
 
@@ -195,6 +198,6 @@
     </div>
 
     <!-- Script Import (ES Module) -->
-    <script type="module" src="app.js?v=4.7"></script>
+    <script type="module" src="app.js?v=4.8"></script>
 </body>
 </html>
