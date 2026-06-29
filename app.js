@@ -85,10 +85,6 @@ const el = {
     exportQuality: document.getElementById('export-quality'),
     qualityValue: document.getElementById('quality-value'),
     btnExtract: document.getElementById('btn-extract'),
-    
-    // Toast
-    toast: document.getElementById('toast'),
-    toastMessage: document.getElementById('toast-message')
 };
 
 // --- Canvas Context ---
@@ -1160,16 +1156,6 @@ function downloadBlob(blob, filename) {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-// Show animated success toast notification
-function showToast(message) {
-    el.toastMessage.textContent = message;
-    el.toast.classList.add('show');
-    
-    setTimeout(() => {
-        el.toast.classList.remove('show');
-    }, 4000);
 }
 
 // Load preconfigured online demo video
