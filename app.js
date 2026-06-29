@@ -3,6 +3,12 @@ import { parseGIF, decompressFrames } from 'https://esm.sh/gifuct-js@2.1.2';
 // iOS Safari ignores user-scalable=no, so block pinch-zoom gestures manually.
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 
+// Pause playback when the app goes to the background
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pause();
+});
+window.addEventListener('pagehide', () => pause());
+
 // Pinch-to-zoom / pan state for the preview canvas (scale 1x..4x)
 const zoom = {
     scale: 1,
@@ -1032,7 +1038,22 @@ function extractCurrentFrame(forceNewTab = false) {
             eCtx.drawImage(bitmap, 0, 0);
         }
     }
-    
+
+    // When zoomed in, crop to the visible region only
+    let outCanvas = exportCanvas;
+    const crop = getZoomCropSource(state.videoWidth, state.videoHeight);
+    if (crop) {
+        const cropped = document.createElement('canvas');
+        cropped.width = Math.round(crop.sw);
+        cropped.height = Math.round(crop.sh);
+        cropped.getContext('2d').drawImage(
+            exportCanvas,
+            crop.sx, crop.sy, crop.sw, crop.sh,
+            0, 0, cropped.width, cropped.height,
+        );
+        outCanvas = cropped;
+    }
+
     // Determine mime-type & quality parameter
     let mimeType = 'image/png';
     let ext = 'png';
@@ -1049,12 +1070,12 @@ function extractCurrentFrame(forceNewTab = false) {
     if (!forceNewTab) {
         const baseName = state.fileName.substring(0, state.fileName.lastIndexOf('.')) || 'CapShot';
         const filename = `${baseName}_frame_${state.currentFrameIndex + 1}.${ext}`;
-        saveFrame(exportCanvas, mimeType, filename);
+        saveFrame(outCanvas, mimeType, filename);
         return;
     }
 
     // Canvas tap: render the high-res frame into the opened preview tab
-    exportCanvas.toBlob((blob) => {
+    outCanvas.toBlob((blob) => {
         if (!blob) {
             alert('이미지 추출에 실패했습니다.');
             if (newTab) newTab.close();
@@ -1208,14 +1229,18 @@ function resetZoom() {
     applyZoomTransform();
 }
 
-// Zoom to a given scale while keeping the tapped point fixed on screen
-function zoomToPoint(clientX, clientY, scale) {
-    const rect = el.previewCanvas.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    zoom.scale = Math.max(zoom.minScale, Math.min(zoom.maxScale, scale));
-    zoom.tx = (1 - zoom.scale) * (clientX - cx);
-    zoom.ty = (1 - zoom.scale) * (clientY - cy);
+// Zoom to a target scale while keeping the given screen point fixed (works from any current state)
+function zoomToPoint(clientX, clientY, newScale) {
+    const rect = el.previewCanvas.parentElement.getBoundingClientRect();
+    const ccx = rect.left + rect.width / 2;
+    const ccy = rect.top + rect.height / 2;
+    const s = zoom.scale;
+    const ns = Math.max(zoom.minScale, Math.min(zoom.maxScale, newScale));
+    const ax = clientX - ccx;
+    const ay = clientY - ccy;
+    zoom.tx = ax - (ns / s) * (ax - zoom.tx);
+    zoom.ty = ay - (ns / s) * (ay - zoom.ty);
+    zoom.scale = ns;
     clampZoomPan();
     applyZoomTransform();
 }
@@ -1230,6 +1255,39 @@ function clampZoomPan() {
     zoom.ty = Math.max(-maxY, Math.min(maxY, zoom.ty));
 }
 
+// Map the currently visible (zoomed) region back to source pixels for cropping.
+// Returns {sx, sy, sw, sh} in source-image coordinates, or null when not zoomed.
+function getZoomCropSource(srcW, srcH) {
+    if (zoom.scale <= 1.01) return null;
+    const canvas = el.previewCanvas;
+    const container = canvas.parentElement;
+    const dispW = canvas.offsetWidth;
+    const dispH = canvas.offsetHeight;
+    if (!dispW || !dispH) return null;
+
+    const contW = container.clientWidth;
+    const contH = container.clientHeight;
+    const s = zoom.scale;
+
+    // Inverse of the transform: container point -> display offset on the canvas
+    const toU = (px) => dispW / 2 + (px - contW / 2 - zoom.tx) / s;
+    const toV = (py) => dispH / 2 + (py - contH / 2 - zoom.ty) / s;
+
+    const u0 = Math.max(0, Math.min(dispW, toU(0)));
+    const u1 = Math.max(0, Math.min(dispW, toU(contW)));
+    const v0 = Math.max(0, Math.min(dispH, toV(0)));
+    const v1 = Math.max(0, Math.min(dispH, toV(contH)));
+
+    const kx = srcW / dispW;
+    const ky = srcH / dispH;
+    const sx = u0 * kx;
+    const sy = v0 * ky;
+    const sw = (u1 - u0) * kx;
+    const sh = (v1 - v0) * ky;
+    if (sw < 1 || sh < 1) return null;
+    return { sx, sy, sw, sh };
+}
+
 function setupPreviewZoom() {
     const container = el.previewCanvas.parentElement; // .canvas-container
 
@@ -1239,6 +1297,8 @@ function setupPreviewZoom() {
     let panStartTx = 0, panStartTy = 0;
     let moved = false;
     let lastTapTime = 0;
+    let tapTimer = null;
+    const DOUBLE_TAP_MS = 250;
 
     const touchDist = (touches) =>
         Math.hypot(
@@ -1260,7 +1320,8 @@ function setupPreviewZoom() {
             panStartTy = zoom.ty;
             moved = false;
             // Double-tap: zoom 2x at the tapped point, or back to 1x if already zoomed
-            if (e.timeStamp - lastTapTime < 300) {
+            if (e.timeStamp - lastTapTime < DOUBLE_TAP_MS) {
+                if (tapTimer) { clearTimeout(tapTimer); tapTimer = null; } // cancel pending play toggle
                 if (zoom.scale > 1.01) {
                     resetZoom();
                 } else {
@@ -1268,8 +1329,10 @@ function setupPreviewZoom() {
                 }
                 zoom.suppressClick = true;
                 moved = true;
+                lastTapTime = 0;
+            } else {
+                lastTapTime = e.timeStamp;
             }
-            lastTapTime = e.timeStamp;
         }
     }, { passive: false });
 
@@ -1294,8 +1357,7 @@ function setupPreviewZoom() {
     }, { passive: false });
 
     container.addEventListener('touchend', (e) => {
-        if (moved) zoom.suppressClick = true; // swallow the click after a pan/pinch
-        if (e.touches.length === 1) {
+        if (e.touches.length >= 1) {
             // Lifted one finger of a pinch — re-anchor the pan so it doesn't jump
             const t = e.touches[0];
             panStartX = t.clientX;
@@ -1303,9 +1365,59 @@ function setupPreviewZoom() {
             panStartTx = zoom.tx;
             panStartTy = zoom.ty;
             pinchStartDist = 0;
-        } else if (e.touches.length === 0) {
-            pinchStartDist = 0;
+            return;
         }
+
+        // All fingers up
+        pinchStartDist = 0;
+        zoom.suppressClick = true; // tap-to-play is handled here, not via the native click
+
+        if (moved) return; // pan / pinch / double-tap — never toggles play
+
+        // Clean single tap: wait briefly so a following tap can win as a double-tap
+        if (tapTimer) clearTimeout(tapTimer);
+        tapTimer = setTimeout(() => {
+            tapTimer = null;
+            if (state.mediaType) togglePlayPause();
+        }, DOUBLE_TAP_MS + 40);
+    });
+
+    // --- Desktop: wheel to zoom toward the cursor, drag to pan ---
+    container.addEventListener('wheel', (e) => {
+        if (!state.mediaType) return;
+        e.preventDefault();
+        const factor = Math.exp(-e.deltaY * 0.0015); // smooth multiplicative zoom
+        zoomToPoint(e.clientX, e.clientY, zoom.scale * factor);
+    }, { passive: false });
+
+    let mouseDown = false;
+    let mStartX = 0, mStartY = 0, mStartTx = 0, mStartTy = 0, mMoved = false;
+
+    container.addEventListener('mousedown', (e) => {
+        if (zoom.scale <= 1) return; // only pan when zoomed in
+        mouseDown = true;
+        mMoved = false;
+        mStartX = e.clientX;
+        mStartY = e.clientY;
+        mStartTx = zoom.tx;
+        mStartTy = zoom.ty;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (!mouseDown) return;
+        const dx = e.clientX - mStartX;
+        const dy = e.clientY - mStartY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) mMoved = true;
+        zoom.tx = mStartTx + dx;
+        zoom.ty = mStartTy + dy;
+        clampZoomPan();
+        applyZoomTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+        if (!mouseDown) return;
+        if (mMoved) zoom.suppressClick = true; // don't toggle play after a drag-pan
+        mouseDown = false;
     });
 }
 
