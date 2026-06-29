@@ -46,17 +46,15 @@ const el = {
     timelinePlayhead: document.getElementById('timeline-playhead'),
     currentTime: document.getElementById('current-time'),
     totalTime: document.getElementById('total-time'),
-    btnPrevFrame: document.getElementById('btn-prev-frame'),
-    btnPlayPause: document.getElementById('btn-play-pause'),
-    btnNextFrame: document.getElementById('btn-next-frame'),
-    playIcon: document.getElementById('play-icon'),
-    pauseIcon: document.getElementById('pause-icon'),
+    detailDial: document.getElementById('detail-dial'),
     frameCounter: document.getElementById('frame-counter'),
     
     // Info Panel
     btnBackHeader: document.getElementById('btn-back-header'),
     btnInfoHeader: document.getElementById('btn-info-header'),
+    btnSettingsHeader: document.getElementById('btn-settings-header'),
     infoPopover: document.getElementById('info-popover'),
+    settingsPopover: document.getElementById('settings-popover'),
     infoName: document.getElementById('info-name'),
     infoType: document.getElementById('info-type'),
     infoResolution: document.getElementById('info-resolution'),
@@ -109,27 +107,34 @@ function init() {
     // Close Media (Back Button)
     el.btnBackHeader.addEventListener('click', closeMedia);
 
-    // Media Info Popover (top-right "i" button)
+    // Header popovers: media info ("i") and export settings (gear)
     el.btnInfoHeader.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleInfoPopover();
     });
-    // Close popover when clicking/tapping outside of it
-    document.addEventListener('click', (e) => {
-        if (el.infoPopover.style.display === 'none') return;
-        if (el.infoPopover.contains(e.target) || el.btnInfoHeader.contains(e.target)) return;
-        closeInfoPopover();
+    el.btnSettingsHeader.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleSettingsPopover();
     });
-    
-    // Play / Pause
-    el.btnPlayPause.addEventListener('click', togglePlayPause);
-    
-    // Next / Prev Frame Buttons (tap to step once, press-and-hold to step repeatedly)
-    setupFramePressHold(el.btnPrevFrame, -1);
-    setupFramePressHold(el.btnNextFrame, 1);
+    // Close a popover when clicking/tapping outside it and its button
+    document.addEventListener('click', (e) => {
+        if (el.infoPopover.style.display !== 'none'
+            && !el.infoPopover.contains(e.target)
+            && !el.btnInfoHeader.contains(e.target)) {
+            closeInfoPopover();
+        }
+        if (el.settingsPopover.style.display !== 'none'
+            && !el.settingsPopover.contains(e.target)
+            && !el.btnSettingsHeader.contains(e.target)) {
+            closeSettingsPopover();
+        }
+    });
     
     // Scrubber: drag/tap anywhere on the timeline track
     setupScrubbing();
+
+    // Detail dial: fine scrubbing ruler synced with the timeline
+    setupDetailDial();
     
     // Format Selection Tabs
     el.formatTabs.forEach(tab => {
@@ -156,37 +161,19 @@ function init() {
         state.exportQuality = val / 100;
     });
     
-    // Preview Canvas click & touch (Tap video to open high-res frame in new tab)
-    let touchStartX = 0;
-    let touchStartY = 0;
-    el.previewCanvas.addEventListener('touchstart', (e) => {
-        const touch = e.changedTouches[0];
-        touchStartX = touch.clientX;
-        touchStartY = touch.clientY;
-    }, { passive: true });
-    
-    el.previewCanvas.addEventListener('touchend', (e) => {
-        const touch = e.changedTouches[0];
-        const diffX = Math.abs(touch.clientX - touchStartX);
-        const diffY = Math.abs(touch.clientY - touchStartY);
-        // Standard tap threshold
-        if (diffX < 10 && diffY < 10) {
-            e.preventDefault();
-            extractCurrentFrame(true);
-        }
+    // Tap the preview to toggle play / pause
+    el.previewCanvas.addEventListener('click', () => {
+        if (state.mediaType) togglePlayPause();
     });
-    
-    el.previewCanvas.addEventListener('click', (e) => {
-        // Only trigger if not already handled by touch
-        if (e.defaultPrevented) return;
-        extractCurrentFrame(true);
-    });
-    
+
     // Extract Button (Save)
     el.btnExtract.addEventListener('click', () => extractCurrentFrame(false));
     
     // Keyboard Hotkeys
     window.addEventListener('keydown', handleGlobalKeydowns);
+
+    // Block dragging anything (images/canvas) across the app
+    window.addEventListener('dragstart', (e) => e.preventDefault());
 }
 
 // --- File Handling Logic ---
@@ -262,10 +249,13 @@ async function loadVideo(fileOrUrl) {
         el.workspace.style.display = 'grid';
         el.btnBackHeader.style.display = 'flex';
         el.btnInfoHeader.style.display = 'flex';
+        el.btnSettingsHeader.style.display = 'flex';
         
-        // Render first frame
+        // Show the 0s frame, but draw it 0.01s after the data is loaded so the
+        // frame is actually decoded (drawing too early can yield a blank frame).
         el.sourceVideo.currentTime = 0;
-        await waitForSeek();
+        await waitForVideoReady();
+        await new Promise(resolve => setTimeout(resolve, 10));
         drawVideoFrameToCanvas();
         updateTimelinePlayhead(0);
         updateFrameCounter();
@@ -281,14 +271,37 @@ async function loadVideo(fileOrUrl) {
     };
 }
 
-// Wait for video seek to complete
-function waitForSeek() {
+// Wait until the video has frame data available (with a timeout fallback)
+function waitForVideoReady(timeoutMs = 3000) {
     return new Promise(resolve => {
-        const onSeeked = () => {
+        const v = el.sourceVideo;
+        if (v.readyState >= 2) return resolve(); // HAVE_CURRENT_DATA: frame ready
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            v.removeEventListener('loadeddata', finish);
+            resolve();
+        };
+        v.addEventListener('loadeddata', finish);
+        setTimeout(finish, timeoutMs);
+    });
+}
+
+// Wait for video seek to complete (with a timeout fallback so a missing
+// 'seeked' event can never hang loading/scrubbing)
+function waitForSeek(timeoutMs = 3000) {
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
             el.sourceVideo.removeEventListener('seeked', onSeeked);
             resolve();
         };
+        const onSeeked = () => finish();
         el.sourceVideo.addEventListener('seeked', onSeeked);
+        setTimeout(finish, timeoutMs);
     });
 }
 
@@ -328,7 +341,10 @@ async function generateVideoThumbnails(videoUrl) {
         await new Promise(resolve => {
             offscreenVideo.onseeked = resolve;
         });
-        
+        // Let the frame finish decoding/painting before capturing it,
+        // otherwise the thumbnail (especially the first) can come out black.
+        await new Promise(resolve => setTimeout(resolve, 30));
+
         tCtx.clearRect(0, 0, thumbCanvas.width, thumbCanvas.height);
         tCtx.drawImage(offscreenVideo, 0, 0, thumbCanvas.width, thumbCanvas.height);
         
@@ -446,6 +462,7 @@ async function loadGIF(file) {
         el.workspace.style.display = 'grid';
         el.btnBackHeader.style.display = 'flex';
         el.btnInfoHeader.style.display = 'flex';
+        el.btnSettingsHeader.style.display = 'flex';
         
         // Render first frame
         drawGIFFrame(0);
@@ -511,10 +528,7 @@ function togglePlayPause() {
 function play() {
     if (state.isPlaying) return;
     state.isPlaying = true;
-    
-    el.playIcon.style.display = 'none';
-    el.pauseIcon.style.display = 'block';
-    
+
     if (state.mediaType === 'video') {
         el.sourceVideo.play();
         playVideoLoop();
@@ -526,10 +540,7 @@ function play() {
 function pause() {
     if (!state.isPlaying) return;
     state.isPlaying = false;
-    
-    el.playIcon.style.display = 'block';
-    el.pauseIcon.style.display = 'none';
-    
+
     if (state.mediaType === 'video') {
         el.sourceVideo.pause();
         cancelAnimationFrame(animationFrameId);
@@ -591,38 +602,6 @@ function playGIFLoop() {
 }
 
 // --- 4. Navigation & Scrubbing ---
-
-// Tap = single step, press-and-hold = continuous stepping until release
-function setupFramePressHold(button, direction) {
-    const HOLD_DELAY = 400;   // ms before continuous stepping kicks in
-    const REPEAT_GAP = 80;    // ms between repeated steps while held
-    let active = false;
-    let holdTimer = null;
-
-    const repeatStep = async () => {
-        if (!active) return;
-        await stepFrame(direction);
-        if (active) holdTimer = setTimeout(repeatStep, REPEAT_GAP);
-    };
-
-    const start = (e) => {
-        e.preventDefault();
-        if (active) return;
-        active = true;
-        stepFrame(direction); // immediate single step on press
-        holdTimer = setTimeout(repeatStep, HOLD_DELAY);
-    };
-
-    const stop = () => {
-        active = false;
-        clearTimeout(holdTimer);
-    };
-
-    button.addEventListener('pointerdown', start);
-    button.addEventListener('pointerup', stop);
-    button.addEventListener('pointerleave', stop);
-    button.addEventListener('pointercancel', stop);
-}
 
 // Step precisely +1 / -1 frame
 async function stepFrame(direction) {
@@ -736,25 +715,157 @@ function seekToPct(pct) {
 // --- Auxiliary UI Sync Helpers ---
 function updateTimelinePlayhead(pct) {
     el.timelinePlayhead.style.left = `${pct * 100}%`;
+    drawDetailDial(pct);
+}
+
+// --- Detail Dial (fine scrubbing ruler, synced with the timeline) ---
+
+// Current position as a 0..1 fraction of the media duration
+function currentPct() {
+    if (!state.duration) return 0;
+    if (state.mediaType === 'video') {
+        return el.sourceVideo.currentTime / state.duration;
+    }
+    if (state.mediaType === 'gif') {
+        return (state.gifAccumulatedTimes[state.currentFrameIndex] || 0) / state.duration;
+    }
+    return 0;
+}
+
+// Draw the ruler: a thin tick every 0.1s, a tall/darker tick every 1s (every
+// 10th), centered fixed indicator, ticks fading toward the edges.
+function drawDetailDial(pct) {
+    const canvas = el.detailDial;
+    if (!canvas) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+    if (!cssW || !cssH) return;
+
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+    }
+
+    const c = canvas.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, cssW, cssH);
+
+    const tickSpacing = 8;       // px between ticks
+    const ticksPerSecond = 10;   // a tick every 0.1s
+    const centerX = cssW / 2;
+    const midY = cssH / 2;
+
+    const currentSec = pct * state.duration;
+    const centerTick = currentSec * ticksPerSecond;
+    const baseTick = Math.floor(centerTick);
+    const fractional = centerTick - baseTick;
+    const maxTick = Math.floor(state.duration * ticksPerSecond);
+    const halfCount = Math.ceil(cssW / tickSpacing / 2) + 2;
+
+    for (let i = -halfCount; i <= halfCount; i++) {
+        const tickIdx = baseTick + i;
+        if (tickIdx < 0 || tickIdx > maxTick) continue;
+
+        const x = centerX + (i - fractional) * tickSpacing;
+        if (x < 0 || x > cssW) continue;
+
+        const isMajor = tickIdx % 10 === 0;
+        const h = isMajor ? 16 : 8;
+        const baseOpacity = isMajor ? 0.6 : 0.3;
+        const fade = Math.max(0, 1 - Math.abs(x - centerX) / (cssW / 2));
+
+        c.strokeStyle = `rgba(255, 255, 255, ${baseOpacity * fade})`;
+        c.lineWidth = isMajor ? 1.5 : 1;
+        c.beginPath();
+        c.moveTo(x, midY - h / 2);
+        c.lineTo(x, midY + h / 2);
+        c.stroke();
+    }
+
+    // Fixed center indicator
+    c.strokeStyle = '#3b82f6';
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(centerX, 4);
+    c.lineTo(centerX, cssH - 4);
+    c.stroke();
+}
+
+// Drag the dial to scrub finely (80px = 1 second), synced with the timeline
+function setupDetailDial() {
+    const canvas = el.detailDial;
+    if (!canvas) return;
+
+    const PX_PER_SECOND = 80; // tickSpacing(8) * ticksPerSecond(10)
+    let dragging = false;
+    let startX = 0;
+    let startSec = 0;
+
+    canvas.addEventListener('pointerdown', (e) => {
+        if (!state.mediaType) return;
+        dragging = true;
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+        pause();
+        startX = e.clientX;
+        startSec = currentPct() * state.duration;
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - startX;
+        let newSec = startSec - dx / PX_PER_SECOND; // drag right = earlier
+        newSec = Math.max(0, Math.min(state.duration, newSec));
+        seekToPct(state.duration > 0 ? newSec / state.duration : 0);
+    });
+
+    const stop = (e) => {
+        dragging = false;
+        try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+    };
+    canvas.addEventListener('pointerup', stop);
+    canvas.addEventListener('pointercancel', stop);
+
+    // Keep the dial crisp/synced on resize
+    window.addEventListener('resize', () => drawDetailDial(currentPct()));
 }
 
 function updateFrameCounter() {
     el.frameCounter.textContent = `프레임: ${state.currentFrameIndex + 1} / ${state.totalFrames}`;
 }
 
-// --- Media Info Popover ---
+// --- Header Popovers (media info + export settings, mutually exclusive) ---
 function toggleInfoPopover() {
-    if (el.infoPopover.style.display === 'none') {
+    const isOpen = el.infoPopover.style.display !== 'none';
+    closeSettingsPopover();
+    if (isOpen) {
+        closeInfoPopover();
+    } else {
         el.infoPopover.style.display = 'block';
         el.btnInfoHeader.classList.add('active');
-    } else {
-        closeInfoPopover();
     }
 }
 
 function closeInfoPopover() {
     el.infoPopover.style.display = 'none';
     el.btnInfoHeader.classList.remove('active');
+}
+
+function toggleSettingsPopover() {
+    const isOpen = el.settingsPopover.style.display !== 'none';
+    closeInfoPopover();
+    if (isOpen) {
+        closeSettingsPopover();
+    } else {
+        el.settingsPopover.style.display = 'block';
+        el.btnSettingsHeader.classList.add('active');
+    }
+}
+
+function closeSettingsPopover() {
+    el.settingsPopover.style.display = 'none';
+    el.btnSettingsHeader.classList.remove('active');
 }
 
 // Close current workspace and return to upload dashboard
@@ -780,7 +891,9 @@ function closeMedia() {
     el.dropzone.style.display = 'block';
     el.btnBackHeader.style.display = 'none';
     el.btnInfoHeader.style.display = 'none';
+    el.btnSettingsHeader.style.display = 'none';
     closeInfoPopover();
+    closeSettingsPopover();
     
     // Reset state
     state.mediaType = null;
@@ -966,27 +1079,40 @@ function dataURLToBlob(dataURL) {
     return new Blob([bytes], { type: mime });
 }
 
-// Save a frame: native share sheet on mobile (lets the user save to the photo
-// album), direct download as fallback on desktop / unsupported browsers.
+// Treat coarse-pointer / touch devices as mobile (more robust than UA sniffing)
+function isMobileDevice() {
+    return window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+}
+
+// Save a frame, branching by device:
+//  - Mobile: native share sheet so the user can save to the photo album
+//    (requires HTTPS — navigator.canShare is false on plain HTTP)
+//  - Desktop: direct file download
 async function saveFrame(canvas, mimeType, filename) {
     const quality = state.exportFormat === 'png' ? undefined : state.exportQuality;
     const dataUrl = canvas.toDataURL(mimeType, quality);
     const blob = dataURLToBlob(dataUrl);
     const file = new File([blob], filename, { type: mimeType });
 
-    // Mobile: open the OS share sheet so the user can "사진에 저장 / 이미지 저장"
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    const canShareFile = navigator.canShare && navigator.canShare({ files: [file] });
+
+    if (isMobileDevice() && canShareFile) {
+        // Mobile → OS share sheet ("사진에 저장 / 이미지 저장")
         try {
             await navigator.share({ files: [file], title: 'CapShot' });
             return;
         } catch (err) {
-            // User cancelled — do nothing
-            if (err && err.name === 'AbortError') return;
-            // Any other failure falls through to download
+            if (err && err.name === 'AbortError') return; // user cancelled
+            // any other failure falls through to download
         }
     }
 
-    // Desktop / unsupported: trigger a download
+    // Desktop (or share unavailable) → download
+    downloadBlob(blob, filename);
+}
+
+// Trigger a browser download for a blob
+function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.download = filename;
@@ -995,8 +1121,6 @@ async function saveFrame(canvas, mimeType, filename) {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-    showToast(`프레임 ${state.currentFrameIndex + 1}이 고화질 ${state.exportFormat.toUpperCase()} 파일로 저장되었습니다!`);
 }
 
 // Show animated success toast notification

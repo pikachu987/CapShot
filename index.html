@@ -17,7 +17,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     
     <!-- Custom Style -->
-    <link rel="stylesheet" href="app.css?v=3.5">
+    <link rel="stylesheet" href="app.css?v=4.7">
 </head>
 <body>
     <div id="app-container">
@@ -42,13 +42,38 @@
                     <span class="logo-text">CapShot <span class="logo-badge">Web</span></span>
                 </div>
             </div>
-            <button id="btn-info-header" class="btn-info-header" style="display: none;" title="미디어 정보">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 22px; height: 22px; display: block;">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="16" x2="12" y2="12"></line>
-                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                </svg>
-            </button>
+            <div class="header-actions">
+                <button id="btn-settings-header" class="header-action-btn" style="display: none;" title="내보내기 설정">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 21px; height: 21px; display: block;">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                </button>
+                <button id="btn-info-header" class="header-action-btn" style="display: none;" title="미디어 정보">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 22px; height: 22px; display: block;">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="16" x2="12" y2="12"></line>
+                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                    </svg>
+                </button>
+            </div>
+            <div id="settings-popover" class="info-popover settings-popover" style="display: none;">
+                <div class="settings-group">
+                    <h2 class="section-title">내보내기 설정</h2>
+                    <div class="format-selector">
+                        <button class="format-tab active" data-format="png">PNG</button>
+                        <button class="format-tab" data-format="jpeg">JPEG</button>
+                        <button class="format-tab" data-format="webp">WebP</button>
+                    </div>
+                </div>
+                <div id="quality-setting" class="settings-group" style="display: none;">
+                    <div class="slider-header">
+                        <h2 class="section-title">품질</h2>
+                        <span id="quality-value">90%</span>
+                    </div>
+                    <input type="range" id="export-quality" min="10" max="100" value="90">
+                </div>
+            </div>
             <div id="info-popover" class="info-popover" style="display: none;">
                 <p id="info-name" class="info-popover-name">-</p>
                 <div class="info-grid">
@@ -128,30 +153,9 @@
                                 <span id="total-time">00:00.00</span>
                             </div>
 
-                            <div class="control-buttons">
-                                <button id="btn-prev-frame" class="btn btn-icon" title="이전 프레임 (왼쪽 화살표)">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <polygon points="19 20 9 12 19 4 19 20"></polygon>
-                                        <line x1="5" y1="19" x2="5" y2="5"></line>
-                                    </svg>
-                                </button>
-                                
-                                <button id="btn-play-pause" class="btn btn-icon btn-play" title="재생/일시정지 (스페이스바)">
-                                    <svg id="play-icon" viewBox="0 0 24 24" fill="currentColor">
-                                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                                    </svg>
-                                    <svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display: none;">
-                                        <rect x="6" y="4" width="4" height="16"></rect>
-                                        <rect x="14" y="4" width="4" height="16"></rect>
-                                    </svg>
-                                </button>
-
-                                <button id="btn-next-frame" class="btn btn-icon" title="다음 프레임 (오른쪽 화살표)">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <polygon points="5 4 15 12 5 20 5 4"></polygon>
-                                        <line x1="19" y1="5" x2="19" y2="19"></line>
-                                    </svg>
-                                </button>
+                            <!-- Detail dial: fine scrubbing ruler, synced with the top timeline -->
+                            <div class="detail-dial-container">
+                                <canvas id="detail-dial"></canvas>
                             </div>
 
                             <div class="frame-display">
@@ -161,27 +165,8 @@
                     </div>
                 </div>
 
-                <!-- Right Panel: Export Options -->
+                <!-- Right Panel: Save action (export settings live in the header gear popover) -->
                 <div class="control-panel">
-                    <div class="export-row">
-                        <div class="panel-section export-format-section">
-                            <h2 class="section-title">내보내기 설정</h2>
-                            <div class="format-selector">
-                                <button class="format-tab active" data-format="png">PNG</button>
-                                <button class="format-tab" data-format="jpeg">JPEG</button>
-                                <button class="format-tab" data-format="webp">WebP</button>
-                            </div>
-                        </div>
-
-                        <div id="quality-setting" class="panel-section quality-section" style="display: none;">
-                            <div class="slider-header">
-                                <h2 class="section-title">품질</h2>
-                                <span id="quality-value">90%</span>
-                            </div>
-                            <input type="range" id="export-quality" min="10" max="100" value="90">
-                        </div>
-                    </div>
-
                     <div class="panel-section action-section">
                         <button id="btn-extract" class="btn btn-primary btn-large btn-glow btn-extract-sticky">
                             <svg viewBox="0 0 24 24" class="btn-icon-svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -210,6 +195,6 @@
     </div>
 
     <!-- Script Import (ES Module) -->
-    <script type="module" src="app.js?v=3.5"></script>
+    <script type="module" src="app.js?v=4.7"></script>
 </body>
 </html>
