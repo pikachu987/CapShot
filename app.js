@@ -3,6 +3,16 @@ import { parseGIF, decompressFrames } from 'https://esm.sh/gifuct-js@2.1.2';
 // iOS Safari ignores user-scalable=no, so block pinch-zoom gestures manually.
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 
+// Pinch-to-zoom / pan state for the preview canvas (scale 1x..4x)
+const zoom = {
+    scale: 1,
+    tx: 0,
+    ty: 0,
+    minScale: 1,
+    maxScale: 4,
+    suppressClick: false,
+};
+
 // --- State Management ---
 const state = {
     mediaType: null,      // 'video' | 'gif'
@@ -164,10 +174,13 @@ function init() {
         state.exportQuality = val / 100;
     });
     
-    // Tap the preview to toggle play / pause
+    // Tap the preview to toggle play / pause (skip if the gesture was a pan/pinch)
     el.previewCanvas.addEventListener('click', () => {
+        if (zoom.suppressClick) { zoom.suppressClick = false; return; }
         if (state.mediaType) togglePlayPause();
     });
+
+    setupPreviewZoom();
 
     // Extract Button (Save)
     el.btnExtract.addEventListener('click', () => extractCurrentFrame(false));
@@ -181,6 +194,7 @@ function init() {
 
 // --- File Handling Logic ---
 function handleFile(file) {
+    resetZoom();
     state.fileName = file.name;
     const fileType = file.type;
     
@@ -1179,6 +1193,120 @@ function formatTime(secs) {
     const cc = c < 10 ? '0' + c : c;
     
     return `${mm}:${ss}.${cc}`;
+}
+
+// --- Preview pinch-zoom & pan (1x..4x) ---
+function applyZoomTransform() {
+    el.previewCanvas.style.transform =
+        `translate(${zoom.tx}px, ${zoom.ty}px) scale(${zoom.scale})`;
+}
+
+function resetZoom() {
+    zoom.scale = 1;
+    zoom.tx = 0;
+    zoom.ty = 0;
+    applyZoomTransform();
+}
+
+// Zoom to a given scale while keeping the tapped point fixed on screen
+function zoomToPoint(clientX, clientY, scale) {
+    const rect = el.previewCanvas.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    zoom.scale = Math.max(zoom.minScale, Math.min(zoom.maxScale, scale));
+    zoom.tx = (1 - zoom.scale) * (clientX - cx);
+    zoom.ty = (1 - zoom.scale) * (clientY - cy);
+    clampZoomPan();
+    applyZoomTransform();
+}
+
+// Keep the panned/scaled canvas from drifting outside the container
+function clampZoomPan() {
+    const w = el.previewCanvas.offsetWidth;
+    const h = el.previewCanvas.offsetHeight;
+    const maxX = (zoom.scale - 1) * w / 2;
+    const maxY = (zoom.scale - 1) * h / 2;
+    zoom.tx = Math.max(-maxX, Math.min(maxX, zoom.tx));
+    zoom.ty = Math.max(-maxY, Math.min(maxY, zoom.ty));
+}
+
+function setupPreviewZoom() {
+    const container = el.previewCanvas.parentElement; // .canvas-container
+
+    let pinchStartDist = 0;
+    let pinchStartScale = 1;
+    let panStartX = 0, panStartY = 0;
+    let panStartTx = 0, panStartTy = 0;
+    let moved = false;
+    let lastTapTime = 0;
+
+    const touchDist = (touches) =>
+        Math.hypot(
+            touches[0].clientX - touches[1].clientX,
+            touches[0].clientY - touches[1].clientY,
+        );
+
+    container.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+            pinchStartDist = touchDist(e.touches);
+            pinchStartScale = zoom.scale;
+            moved = true; // a pinch is never a tap
+            e.preventDefault();
+        } else if (e.touches.length === 1) {
+            const t = e.touches[0];
+            panStartX = t.clientX;
+            panStartY = t.clientY;
+            panStartTx = zoom.tx;
+            panStartTy = zoom.ty;
+            moved = false;
+            // Double-tap: zoom 2x at the tapped point, or back to 1x if already zoomed
+            if (e.timeStamp - lastTapTime < 300) {
+                if (zoom.scale > 1.01) {
+                    resetZoom();
+                } else {
+                    zoomToPoint(t.clientX, t.clientY, 2);
+                }
+                zoom.suppressClick = true;
+                moved = true;
+            }
+            lastTapTime = e.timeStamp;
+        }
+    }, { passive: false });
+
+    container.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2 && pinchStartDist > 0) {
+            const factor = touchDist(e.touches) / pinchStartDist;
+            zoom.scale = Math.max(zoom.minScale, Math.min(zoom.maxScale, pinchStartScale * factor));
+            clampZoomPan();
+            applyZoomTransform();
+            e.preventDefault();
+        } else if (e.touches.length === 1 && zoom.scale > 1) {
+            const t = e.touches[0];
+            const dx = t.clientX - panStartX;
+            const dy = t.clientY - panStartY;
+            if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+            zoom.tx = panStartTx + dx;
+            zoom.ty = panStartTy + dy;
+            clampZoomPan();
+            applyZoomTransform();
+            e.preventDefault();
+        }
+    }, { passive: false });
+
+    container.addEventListener('touchend', (e) => {
+        if (moved) zoom.suppressClick = true; // swallow the click after a pan/pinch
+        if (e.touches.length === 1) {
+            // Lifted one finger of a pinch — re-anchor the pan so it doesn't jump
+            const t = e.touches[0];
+            panStartX = t.clientX;
+            panStartY = t.clientY;
+            panStartTx = zoom.tx;
+            panStartTy = zoom.ty;
+            pinchStartDist = 0;
+        } else if (e.touches.length === 0) {
+            pinchStartDist = 0;
+        }
+    });
 }
 
 // Fire up
