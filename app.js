@@ -280,11 +280,15 @@ async function loadVideo(fileOrUrl) {
         el.infoName.textContent = '데모 비디오';
     }
     
-    el.sourceVideo.src = videoUrl;
-    el.sourceVideo.load();
-    
+    // iOS Safari won't load metadata for an unmuted <video> without a play
+    // gesture, so 'loadedmetadata' never fires and the app stays stuck on the
+    // dropzone. Muting before load() lets iOS load metadata right away (same
+    // pattern as the offscreen thumbnail video); audio is restored below.
+    el.sourceVideo.muted = true;
+
     // Wait for video metadata to load
     el.sourceVideo.onloadedmetadata = async () => {
+        el.sourceVideo.muted = false;
         state.duration = el.sourceVideo.duration;
         state.videoWidth = el.sourceVideo.videoWidth;
         state.videoHeight = el.sourceVideo.videoHeight;
@@ -334,6 +338,11 @@ async function loadVideo(fileOrUrl) {
         hideLoader();
         alert('비디오를 로드하는 도중 오류가 발생했습니다. 브라우저에서 인코딩을 지원하지 않는 코덱일 수 있습니다.');
     };
+
+    // Register handlers above before kicking off the load so a fast blob-URL
+    // metadata event can't fire before we're listening.
+    el.sourceVideo.src = videoUrl;
+    el.sourceVideo.load();
 }
 
 // Wait until the video has frame data available (with a timeout fallback)
