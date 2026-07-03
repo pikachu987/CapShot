@@ -19,6 +19,26 @@ const zoom = {
     suppressClick: false,
 };
 
+// Crop selection overlay, shown only while zoomed in (scale > 1).
+// x/y/w/h live in container CSS pixels; mapped to source pixels on export.
+const CROP_MIN_SIZE = 50; // minimum crop box, in container px
+const crop = {
+    active: false,
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+};
+// In-flight crop drag (move or corner resize)
+const cropDrag = {
+    mode: null,        // 'move' | 'tl' | 'tr' | 'bl' | 'br'
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    startBox: null,
+    moved: false,      // exceeded the tap threshold (a real drag, not a tap)
+};
+
 // --- State Management ---
 const state = {
     mediaType: null,      // 'video' | 'gif'
@@ -32,6 +52,9 @@ const state = {
     // Video specific
     videoWidth: 0,
     videoHeight: 0,
+
+    // View rotation in degrees (0 | 90 | 180 | 270), applied to canvas + export
+    rotation: 0,
     
     // GIF specific
     gifFrames: [],        // Array of ImageBitmap objects
@@ -55,6 +78,12 @@ const el = {
     
     // Preview & Video
     previewCanvas: document.getElementById('preview-canvas'),
+    cropOverlay: document.getElementById('crop-overlay'),
+    cropBox: document.getElementById('crop-box'),
+    cropSize: document.getElementById('crop-size'),
+    previewControls: document.getElementById('preview-controls'),
+    btnResetView: document.getElementById('btn-reset-view'),
+    btnRotateView: document.getElementById('btn-rotate-view'),
     sourceVideo: document.getElementById('source-video'),
     loadingOverlay: document.getElementById('loading-overlay'),
     loadingMessage: document.getElementById('loading-message'),
@@ -183,6 +212,21 @@ function init() {
     });
 
     setupPreviewZoom();
+    setupCropUI();
+
+    // Floating preview controls: rotate 90° and reset crop/zoom
+    el.btnResetView.addEventListener('click', (e) => {
+        e.stopPropagation();
+        resetView();
+    });
+    el.btnRotateView.addEventListener('click', (e) => {
+        e.stopPropagation();
+        rotateView();
+    });
+    // Keep the container's pan/tap gesture handlers from also reacting to the buttons
+    ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'mousedown'].forEach((evt) => {
+        el.previewControls.addEventListener(evt, (e) => e.stopPropagation());
+    });
 
     // Extract Button (Save)
     el.btnExtract.addEventListener('click', () => extractCurrentFrame(false));
@@ -197,6 +241,7 @@ function init() {
 // --- File Handling Logic ---
 function handleFile(file) {
     resetZoom();
+    state.rotation = 0;
     state.fileName = file.name;
     const fileType = file.type;
     
@@ -278,7 +323,8 @@ async function loadVideo(fileOrUrl) {
         drawVideoFrameToCanvas();
         updateTimelinePlayhead(0);
         updateFrameCounter();
-        
+        showCropUI();
+
         // Generate beautiful timeline thumbnails asynchronously
         generateVideoThumbnails(videoUrl);
         hideLoader();
@@ -324,10 +370,47 @@ function waitForSeek(timeoutMs = 3000) {
     });
 }
 
+// Size a canvas to hold the current frame, swapping w/h for 90°/270° rotation
+function sizeCanvasForRotation(canvas) {
+    if (state.rotation === 90 || state.rotation === 270) {
+        canvas.width = state.videoHeight;
+        canvas.height = state.videoWidth;
+    } else {
+        canvas.width = state.videoWidth;
+        canvas.height = state.videoHeight;
+    }
+}
+
+// Draw a source (video frame or GIF bitmap) into a context, applying the
+// current rotation. The context's canvas must already be sized via
+// sizeCanvasForRotation().
+function drawSourceRotated(targetCtx, source) {
+    const cw = targetCtx.canvas.width;
+    const ch = targetCtx.canvas.height;
+    targetCtx.clearRect(0, 0, cw, ch);
+    targetCtx.save();
+    targetCtx.translate(cw / 2, ch / 2);
+    targetCtx.rotate(state.rotation * Math.PI / 180);
+    targetCtx.drawImage(
+        source,
+        -state.videoWidth / 2, -state.videoHeight / 2,
+        state.videoWidth, state.videoHeight,
+    );
+    targetCtx.restore();
+}
+
+// Redraw the current frame (used after a rotation change)
+function redrawCurrentFrame() {
+    if (state.mediaType === 'video') {
+        drawVideoFrameToCanvas();
+    } else if (state.mediaType === 'gif') {
+        drawGIFFrame(state.currentFrameIndex);
+    }
+}
+
 // Draw current video frame to display canvas
 function drawVideoFrameToCanvas() {
-    ctx.clearRect(0, 0, el.previewCanvas.width, el.previewCanvas.height);
-    ctx.drawImage(el.sourceVideo, 0, 0, el.previewCanvas.width, el.previewCanvas.height);
+    drawSourceRotated(ctx, el.sourceVideo);
 }
 
 // Generate background strip of thumbnails for video timeline
@@ -487,7 +570,8 @@ async function loadGIF(file) {
         drawGIFFrame(0);
         updateTimelinePlayhead(0);
         updateFrameCounter();
-        
+        showCropUI();
+
         // Generate timeline thumbnails from cached frames
         generateGIFThumbnails();
         hideLoader();
@@ -502,8 +586,7 @@ async function loadGIF(file) {
 // Draw cached GIF frame to display canvas
 function drawGIFFrame(index) {
     if (index < 0 || index >= state.gifFrames.length) return;
-    ctx.clearRect(0, 0, el.previewCanvas.width, el.previewCanvas.height);
-    ctx.drawImage(state.gifFrames[index], 0, 0);
+    drawSourceRotated(ctx, state.gifFrames[index]);
 }
 
 // Generate thumbnail strip for GIF timeline
@@ -914,6 +997,7 @@ function closeMedia() {
     el.btnSettingsHeader.style.display = 'none';
     closeInfoPopover();
     closeSettingsPopover();
+    hideCropUI();
     
     // Reset state
     state.mediaType = null;
@@ -921,6 +1005,7 @@ function closeMedia() {
     state.duration = 0;
     state.totalFrames = 0;
     state.currentFrameIndex = 0;
+    state.rotation = 0;
 }
 
 // --- 5. High-Resolution Frame Extraction & Exporting ---
@@ -1018,33 +1103,33 @@ function extractCurrentFrame(forceNewTab = false) {
         }
     }
 
-    // Create temporary full-resolution export canvas
+    // Create temporary full-resolution export canvas (rotation-aware size)
     const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = state.videoWidth;
-    exportCanvas.height = state.videoHeight;
+    sizeCanvasForRotation(exportCanvas);
     const eCtx = exportCanvas.getContext('2d');
-    
+
     if (state.mediaType === 'video') {
         // Draw the current video frame at native camera capture resolution
-        eCtx.drawImage(el.sourceVideo, 0, 0, state.videoWidth, state.videoHeight);
+        drawSourceRotated(eCtx, el.sourceVideo);
     } else if (state.mediaType === 'gif') {
         // Draw the cached full-resolution frame ImageBitmap
         const bitmap = state.gifFrames[state.currentFrameIndex];
         if (bitmap) {
-            eCtx.drawImage(bitmap, 0, 0);
+            drawSourceRotated(eCtx, bitmap);
         }
     }
 
-    // When zoomed in, crop to the visible region only
+    // Crop to the selected region (crop box / zoomed view). Source dims are the
+    // rotated export canvas, not the raw video dimensions.
     let outCanvas = exportCanvas;
-    const crop = getZoomCropSource(state.videoWidth, state.videoHeight);
-    if (crop) {
+    const cropRect = getZoomCropSource(exportCanvas.width, exportCanvas.height);
+    if (cropRect) {
         const cropped = document.createElement('canvas');
-        cropped.width = Math.round(crop.sw);
-        cropped.height = Math.round(crop.sh);
+        cropped.width = Math.round(cropRect.sw);
+        cropped.height = Math.round(cropRect.sh);
         cropped.getContext('2d').drawImage(
             exportCanvas,
-            crop.sx, crop.sy, crop.sw, crop.sh,
+            cropRect.sx, cropRect.sy, cropRect.sw, cropRect.sh,
             0, 0, cropped.width, cropped.height,
         );
         outCanvas = cropped;
@@ -1206,6 +1291,202 @@ function formatTime(secs) {
 function applyZoomTransform() {
     el.previewCanvas.style.transform =
         `translate(${zoom.tx}px, ${zoom.ty}px) scale(${zoom.scale})`;
+    syncCropUI();
+    updateCropSizeLabel();
+}
+
+// --- Crop overlay (visible only while zoomed in) ---
+
+// The crop UI is present whenever media is loaded (both at 1x and zoomed in).
+function syncCropUI() {
+    const shouldShow = !!state.mediaType;
+    if (shouldShow && !crop.active) {
+        showCropUI();
+    } else if (!shouldShow && crop.active) {
+        hideCropUI();
+    }
+}
+
+// Reset the crop box to the actual video display rect (letterbox excluded)
+// and reveal the overlay.
+function showCropUI() {
+    // Default crop = the actual displayed video rect (letterbox excluded)
+    const rect = videoDisplayRect();
+    crop.w = rect.dispW;
+    crop.h = rect.dispH;
+    crop.x = Math.max(0, rect.x);
+    crop.y = Math.max(0, rect.y);
+    crop.active = true;
+    el.cropOverlay.style.display = 'block';
+    el.previewControls.style.display = 'flex';
+    updateCropBoxStyle();
+}
+
+function hideCropUI() {
+    crop.active = false;
+    cancelCropDrag();
+    el.cropOverlay.style.display = 'none';
+    el.previewControls.style.display = 'none';
+}
+
+// Restore the crop box and zoom to their defaults (1x, full video rect)
+function resetView() {
+    resetZoom();   // scale 1, tx/ty 0
+    showCropUI();  // crop box back to the full video rect
+}
+
+// Rotate the view 90° clockwise; resets zoom and crop to fit the new aspect
+function rotateView() {
+    if (!state.mediaType) return;
+    state.rotation = (state.rotation + 90) % 360;
+    sizeCanvasForRotation(el.previewCanvas);
+    redrawCurrentFrame();
+    resetView();
+}
+
+function updateCropBoxStyle() {
+    el.cropBox.style.left = `${crop.x}px`;
+    el.cropBox.style.top = `${crop.y}px`;
+    el.cropBox.style.width = `${crop.w}px`;
+    el.cropBox.style.height = `${crop.h}px`;
+    updateCropSizeLabel();
+}
+
+// Show the crop's actual output size in source pixels (w:h, thousands-comma),
+// which reflects the current crop box, zoom and rotation.
+function updateCropSizeLabel() {
+    if (!crop.active) return;
+    const rotated = state.rotation === 90 || state.rotation === 270;
+    const srcW = rotated ? state.videoHeight : state.videoWidth;
+    const srcH = rotated ? state.videoWidth : state.videoHeight;
+    const rect = getZoomCropSource(srcW, srcH);
+    const w = rect ? Math.round(rect.sw) : srcW;
+    const h = rect ? Math.round(rect.sh) : srcH;
+    el.cropSize.textContent = `${w.toLocaleString('en-US')}×${h.toLocaleString('en-US')}`;
+}
+
+function cancelCropDrag() {
+    cropDrag.mode = null;
+    cropDrag.pointerId = null;
+    cropDrag.startBox = null;
+}
+
+// True when a gesture started on the crop box/handles (so the container's
+// pan/pinch handlers should leave it to the crop logic instead)
+function isCropTarget(target) {
+    return crop.active && target instanceof Element && !!target.closest('.crop-box');
+}
+
+// Move / resize the crop box. Handles are children of the box, so a handle
+// pointerdown must stopPropagation to avoid also triggering a box "move".
+function setupCropUI() {
+    const box = el.cropBox;
+    const container = el.previewCanvas.parentElement;
+
+    const DOUBLE_TAP_MS = 250;
+    const TAP_SLOP = 4; // px of movement still considered a tap
+    let lastTapTime = 0;
+    let tapTimer = null;
+
+    const beginDrag = (e, mode) => {
+        // A second pointer means a pinch is starting — abandon the crop drag
+        if (cropDrag.mode !== null) {
+            cancelCropDrag();
+            return;
+        }
+        e.preventDefault();
+        cropDrag.mode = mode;
+        cropDrag.pointerId = e.pointerId;
+        cropDrag.startX = e.clientX;
+        cropDrag.startY = e.clientY;
+        cropDrag.startBox = { x: crop.x, y: crop.y, w: crop.w, h: crop.h };
+        cropDrag.moved = false;
+    };
+
+    box.addEventListener('pointerdown', (e) => beginDrag(e, 'move'));
+
+    box.querySelectorAll('.crop-handle').forEach((handle) => {
+        handle.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            beginDrag(e, handle.dataset.handle);
+        });
+    });
+
+    window.addEventListener('pointermove', (e) => {
+        if (cropDrag.mode === null || e.pointerId !== cropDrag.pointerId) return;
+        e.preventDefault();
+
+        const contW = container.clientWidth;
+        const contH = container.clientHeight;
+        const dx = e.clientX - cropDrag.startX;
+        const dy = e.clientY - cropDrag.startY;
+        const s = cropDrag.startBox;
+
+        if (cropDrag.mode === 'move') {
+            // Ignore tiny jitter so a tap isn't mistaken for a drag
+            if (!cropDrag.moved && Math.abs(dx) < TAP_SLOP && Math.abs(dy) < TAP_SLOP) return;
+            cropDrag.moved = true;
+            crop.x = Math.max(0, Math.min(contW - s.w, s.x + dx));
+            crop.y = Math.max(0, Math.min(contH - s.h, s.y + dy));
+        } else {
+            // Resize by moving one corner; the opposite corner stays fixed.
+            let left = s.x;
+            let top = s.y;
+            let right = s.x + s.w;
+            let bottom = s.y + s.h;
+
+            if (cropDrag.mode.includes('l')) {
+                left = Math.max(0, Math.min(right - CROP_MIN_SIZE, s.x + dx));
+            }
+            if (cropDrag.mode.includes('r')) {
+                right = Math.min(contW, Math.max(left + CROP_MIN_SIZE, s.x + s.w + dx));
+            }
+            if (cropDrag.mode.includes('t')) {
+                top = Math.max(0, Math.min(bottom - CROP_MIN_SIZE, s.y + dy));
+            }
+            if (cropDrag.mode.includes('b')) {
+                bottom = Math.min(contH, Math.max(top + CROP_MIN_SIZE, s.y + s.h + dy));
+            }
+
+            crop.x = left;
+            crop.y = top;
+            crop.w = right - left;
+            crop.h = bottom - top;
+        }
+
+        updateCropBoxStyle();
+    }, { passive: false });
+
+    const endDrag = (e) => {
+        if (e.pointerId !== cropDrag.pointerId) return;
+        const wasMove = cropDrag.mode === 'move';
+        const moved = cropDrag.moved;
+        cancelCropDrag();
+
+        // A tap inside the box (no drag) keeps the old play / double-tap-zoom UX,
+        // since the box now overlays the whole video.
+        if (!wasMove || moved) return;
+
+        const now = e.timeStamp;
+        if (now - lastTapTime < DOUBLE_TAP_MS) {
+            if (tapTimer) { clearTimeout(tapTimer); tapTimer = null; }
+            if (zoom.scale > 1.01) {
+                resetZoom();
+            } else {
+                zoomToPoint(e.clientX, e.clientY, 2);
+            }
+            lastTapTime = 0;
+        } else {
+            lastTapTime = now;
+            if (tapTimer) clearTimeout(tapTimer);
+            tapTimer = setTimeout(() => {
+                tapTimer = null;
+                if (state.mediaType) togglePlayPause();
+            }, DOUBLE_TAP_MS + 40);
+        }
+    };
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
 }
 
 function resetZoom() {
@@ -1243,12 +1524,29 @@ function clampZoomPan() {
 
 // Map the currently visible (zoomed) region back to source pixels for cropping.
 // Returns {sx, sy, sw, sh} in source-image coordinates, or null when not zoomed.
+// The actual on-screen video rect (object-fit: contain math, rotation-aware),
+// in container coordinates. Independent of the canvas element's box quirks and
+// layout timing, so it never falls back to the full container by mistake.
+function videoDisplayRect() {
+    const container = el.previewCanvas.parentElement;
+    const contW = container.clientWidth;
+    const contH = container.clientHeight;
+    const rotated = state.rotation === 90 || state.rotation === 270;
+    const vidW = rotated ? state.videoHeight : state.videoWidth;
+    const vidH = rotated ? state.videoWidth : state.videoHeight;
+    if (!vidW || !vidH || !contW || !contH) {
+        return { x: 0, y: 0, dispW: contW, dispH: contH };
+    }
+    const scale = Math.min(contW / vidW, contH / vidH);
+    const dispW = vidW * scale;
+    const dispH = vidH * scale;
+    return { x: (contW - dispW) / 2, y: (contH - dispH) / 2, dispW, dispH };
+}
+
 function getZoomCropSource(srcW, srcH) {
-    if (zoom.scale <= 1.01) return null;
-    const canvas = el.previewCanvas;
-    const container = canvas.parentElement;
-    const dispW = canvas.offsetWidth;
-    const dispH = canvas.offsetHeight;
+    if (zoom.scale <= 1.01 && !crop.active) return null;
+    const container = el.previewCanvas.parentElement;
+    const { dispW, dispH } = videoDisplayRect();
     if (!dispW || !dispH) return null;
 
     const contW = container.clientWidth;
@@ -1259,10 +1557,17 @@ function getZoomCropSource(srcW, srcH) {
     const toU = (px) => dispW / 2 + (px - contW / 2 - zoom.tx) / s;
     const toV = (py) => dispH / 2 + (py - contH / 2 - zoom.ty) / s;
 
-    const u0 = Math.max(0, Math.min(dispW, toU(0)));
-    const u1 = Math.max(0, Math.min(dispW, toU(contW)));
-    const v0 = Math.max(0, Math.min(dispH, toV(0)));
-    const v1 = Math.max(0, Math.min(dispH, toV(contH)));
+    // Region to export, in container coords: the crop box when it's active,
+    // otherwise the whole visible container.
+    const rL = crop.active ? crop.x : 0;
+    const rT = crop.active ? crop.y : 0;
+    const rR = crop.active ? crop.x + crop.w : contW;
+    const rB = crop.active ? crop.y + crop.h : contH;
+
+    const u0 = Math.max(0, Math.min(dispW, toU(rL)));
+    const u1 = Math.max(0, Math.min(dispW, toU(rR)));
+    const v0 = Math.max(0, Math.min(dispH, toV(rT)));
+    const v1 = Math.max(0, Math.min(dispH, toV(rB)));
 
     const kx = srcW / dispW;
     const ky = srcH / dispH;
@@ -1294,11 +1599,14 @@ function setupPreviewZoom() {
 
     container.addEventListener('touchstart', (e) => {
         if (e.touches.length === 2) {
+            cancelCropDrag(); // two fingers = pinch, not a crop drag
             pinchStartDist = touchDist(e.touches);
             pinchStartScale = zoom.scale;
             moved = true; // a pinch is never a tap
             e.preventDefault();
         } else if (e.touches.length === 1) {
+            // A single finger on the crop box/handles is a crop gesture
+            if (isCropTarget(e.target)) return;
             const t = e.touches[0];
             panStartX = t.clientX;
             panStartY = t.clientY;
@@ -1323,6 +1631,8 @@ function setupPreviewZoom() {
     }, { passive: false });
 
     container.addEventListener('touchmove', (e) => {
+        // Let the crop logic own single-finger drags that started on the box
+        if (e.touches.length === 1 && isCropTarget(e.target)) return;
         if (e.touches.length === 2 && pinchStartDist > 0) {
             const factor = touchDist(e.touches) / pinchStartDist;
             zoom.scale = Math.max(zoom.minScale, Math.min(zoom.maxScale, pinchStartScale * factor));
@@ -1358,6 +1668,9 @@ function setupPreviewZoom() {
         pinchStartDist = 0;
         zoom.suppressClick = true; // tap-to-play is handled here, not via the native click
 
+        // A crop-box gesture must never toggle play
+        if (isCropTarget(e.target)) return;
+
         if (moved) return; // pan / pinch / double-tap — never toggles play
 
         // Clean single tap: wait briefly so a following tap can win as a double-tap
@@ -1381,6 +1694,7 @@ function setupPreviewZoom() {
 
     container.addEventListener('mousedown', (e) => {
         if (zoom.scale <= 1) return; // only pan when zoomed in
+        if (isCropTarget(e.target)) return; // crop box drag is handled separately
         mouseDown = true;
         mMoved = false;
         mStartX = e.clientX;
