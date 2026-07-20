@@ -84,6 +84,7 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
+    cursor: pointer;
 }
 
 .logo-icon {
@@ -964,6 +965,8 @@ body {
     padding: 2px 0 0 0;
     background: transparent;
     border: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
 }
 
 .btn-extract-sticky {

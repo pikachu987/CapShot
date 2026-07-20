@@ -1,5 +1,20 @@
 import { parseGIF, decompressFrames } from 'https://esm.sh/gifuct-js@2.1.2';
 
+// PWA: register service worker and auto-reload when a new version takes over.
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        const hadController = !!navigator.serviceWorker.controller;
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            // 첫 방문(기존 컨트롤러 없음)에는 새로고침하지 않고, 버전 갱신 시에만 새로고침
+            if (hadController) window.location.reload();
+        });
+    });
+}
+
 // iOS Safari ignores user-scalable=no, so block pinch-zoom gestures manually.
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 
@@ -148,6 +163,12 @@ function init() {
         el.demoBtn.addEventListener('click', loadDemoVideo);
     }
     
+    // Logo click: reload page
+    const headerLogo = document.getElementById('header-logo');
+    if (headerLogo) {
+        headerLogo.addEventListener('click', () => location.reload());
+    }
+
     // Close Media (Back Button)
     el.btnBackHeader.addEventListener('click', closeMedia);
 
